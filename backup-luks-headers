@@ -1,0 +1,40 @@
+#!/bin/sh
+
+DESTINATION_DIRECTORY=/var/backups
+
+echo "LUKS headers backup script by Paweł Wilk <pw@gnu.org>"
+echo "-----------------------------------------------------"
+echo "                         license: GNU GPL version 3.0"
+echo
+echo "Dumping:"
+
+blkid | grep 'TYPE="crypto_LUKS"' | sort -u -t ' ' -k 2,2 | sort -r -t ' ' -k 1,1 | \
+while read d uuid rest
+do
+	uuid=${uuid%\"*}
+	uuid=${uuid##*\"}
+	d=${d%%:*}
+	for i in $(find -L /dev -samefile "${d}" 2>/dev/null); do
+		l=$(grep "[[:blank:]]${i}[[:blank:]]" /etc/crypttab)
+		[ -n "${l}" ] && break
+	done
+	cryptname="${l%%[\ $(printf '\t')]*}"
+	
+	[ -z "${cryptname}" ] && cryptname=$(find -L /dev/md -samefile "${d}" 2>/dev/null)
+
+        if [ -z "${cryptname}" ]; then
+                cryptname=$(find -L /dev/disk/by-id -samefile "${d}" -name '*-name-*' 2>/dev/null)
+                cryptname=${cryptname##*-}
+                cryptname=${cryptname##*:}
+        fi
+
+	[ -z "${cryptname}" ] && cryptname="${d}"
+	cryptname=${cryptname##*/}
+	printf "%-16s (%s)\t\tUUID=%s\n" "${cryptname}" "${d}" "${uuid}"
+
+	cryptsetup luksHeaderBackup --header-backup-file "${DESTINATION_DIRECTORY}/luks-header-${cryptname}.img" "${d}"
+	ln -sr "${DESTINATION_DIRECTORY}/luks-header-${cryptname}.img" "/var/backups/luks-header-uuid-${uuid}"
+done
+
+exit 0
+
