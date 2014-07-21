@@ -1,0 +1,425 @@
+#!/bin/sh
+
+# luks-mount-interactive by Paweł Wilk <pw@gnu.org>
+# 
+# license: GNU GPL 3.0
+# 
+
+PROGRAM_VERSION="1.0"
+PROGRAM_NAME="luks-mount-interactive"
+PROGRAM_DESCRIPTION="easily mount LUKS devices"
+
+# defaults
+
+DEFAULT_FIRST_TEXT="Enter passphrase for decrypting volume"
+DEFAULT_RETRY_TEXT="Something went wrong. Try again.."
+DEFAULT_ENCODING="en_US.UTF-8"
+DEFAULT_TIMEOUT=60
+DEFAULT_RETRIES=2
+MIN_RETRIES=0
+MIN_TIMEOUT=0
+
+main () {
+
+# parse arguments
+
+my_script="${0}"
+origargs="$*"
+
+args="$(getopt	-n "${PROGRAM_NAME}"									\
+		-o "Vhnlcdp:q:a:e:t:r:bs"								\
+		--long	"version,help,no-mount,no-unlock,check-password,debug,prompt-type:, 		\
+			question:,second-question:,encoding:,						\
+			timeout:,retries:,batch,sudo"							\
+		-- "$@")"
+
+[ "$?" != "0" ] && exit 1
+
+eval set -- "${args}"
+while true; do
+	case $1 in
+		-V|--version)
+			display_version
+			exit 0
+			;;
+		-h|--help)
+			volume_path_orig=""
+			usage_called="1"
+			shift
+			[ "${1}" = '--' ] && shift
+			break
+			;;
+		-n|--no-mount)
+			do_not_mount="1"
+			shift
+			continue
+			;;
+		-l|--no-unlock)
+			do_not_mount="1"
+			do_not_unlock="1"
+			shift
+			continue
+			;;
+		-c|--check-password)
+			do_not_mount="1"
+			do_not_unlock="1"
+			check_password="1"
+			shift
+			continue
+			;;
+		-d|--debug)
+			debug="1"
+			shift
+			continue
+			;;
+		-p|--prompt-type)
+			prompt_type="${2}"
+			shift; shift
+			continue
+			;;
+		-q|--question)
+			first_text="${2}"
+			shift; shift
+			continue
+			;;
+		-a|--second-question)
+			retry_text="${2}"
+			shift; shift
+			continue
+			;;
+		-e|--encoding)
+			text_encoding="${2}"
+			shift; shift
+			continue
+			;;
+		-t|--timeout)
+			timeout="${2}"
+			shift; shift
+			continue
+			;;
+		-r|--retries)
+			retries="${2}"
+			shift; shift
+			continue
+			;;
+		-b|--batch)
+			batch_mode="1"
+			shift
+			continue
+			;;
+		-s|--sudo)
+			use_sudo="1"
+			shift
+			continue
+			;;
+		--)
+			shift
+			break
+			;;
+		"")
+			break
+			;;
+		*)
+			err 1 "Unknown argument: ${1}"
+			;;
+	esac
+done
+
+volume_path_orig="${1}"
+mount_point="${2}"
+test_pass=""
+
+# validate required arguments
+
+if [ -z "${volume_path_orig}" -o "${usage_called}" = "1" ]; then
+	display_usage
+	[ "${usage_called}" = "1" ] && { echo ; display_version ; exit 0 ; }
+	exit 1
+fi
+
+# validate and re-set optional arguments
+
+[ -z "${retry_text}" -a -n "${text_encoding}" ] && err 1 "Text encoding for default messages shouldn't be changed"
+[ -z "${timeout}"          ] && timeout=$DEFAULT_TIMEOUT
+[ -z "${retries}"          ] && retries=$DEFAULT_RETRIES
+[ -z "${retry_text}"       ] && retry_text="${first_text}"
+[ -z "${text_encoding}"    ] && text_encoding="${DEFAULT_ENCODING}"
+[ -z "${first_text}"       ] && first_text="${DEFAULT_FIRST_TEXT}"
+[ -z "${retry_text}"       ] && retry_text="${DEFAULT_RETRY_TEXT}"
+[ "${do_not_unlock}" = "1" ] && test_pass="--test-passphrase"
+[ "${debug}" = "1"         ] && DEBUG="1"
+
+test_number "${timeout}"  "timeout" $MIN_TIMEOUT
+test_number "${retries}"  "retries" $MIN_RETRIES
+
+needs_display="0"
+
+case "${prompt_type}" in
+	native)		prompter="cryptsetup"	;;
+	readline)	prompter="sh"		;;
+	dialog)		prompter="dialog"	;;
+	zenity)
+		needs_display="1"
+		prompter="zenity"
+		;;
+	''|' ')
+		if [ -n "${DISPLAY}" ]; then
+			needs_display="1"
+			prompter="zenity"
+			# add more if supported, search paths if present
+		else
+			for i in dialog sh cryptsetup ; do
+				type ${i} >/dev/null 2>&1 && prompter="${i}" && break
+			done
+		fi
+		;;
+	*)
+		err 1 "Invalid prompt type. Available types are: dialog, readline, zenity"
+		;;
+esac
+
+# setup prompter
+
+[ "${needs_display}" = "1" -a -z "${DISPLAY}" ]  && err 1 "Prompt type ${prompt_type} requires presence of X11 display variable (DISPLAY)"
+[ -n "${prompter}" ] && type "${prompter}" >/dev/null 2>&1 || err 1 "Cannot find prompter executable (${prompter}) in PATH"
+log "Prompt type is ${prompt_type}; established prompter: ${prompter}"
+
+# go
+
+if [ "$(id -u)" != "0" ]; then
+	[ "${use_sudo}" != "1" ] && err 11 "This program requires superuser privileges to run"
+	if [ -n "${DISPLAY}" ]; then
+		exec gksudo "${my_script}" ${origargs}
+	else
+		exec sudo "${my_script}" ${origargs}
+	fi
+fi
+
+pass_ok="0"
+we_mounted="0"
+we_unlocked="0"
+unlocked="0"
+
+eval $(DEBUG="${DEBUG}" luks-determine-device "${volume_path_orig}" "${mount_point}")
+
+[ -z "${LUKS_VOLUME_PATH}"   ] && errd 2  "Cannot resolve path "
+[ -z "${LUKS_MOUNT_POINT}"   ] && errd 3  "Cannot find mount point"
+[ ! -e "${LUKS_VOLUME_PATH}" ] && errd 10 "Volume ${LUKS_VOLUME_PATH} is not present"
+
+if [ "${LUKS_IS_UNLOCKED}" = "1" -a "${check_password}" != "1" ]; then
+	log 'Device is already unlocked!'
+	if [ "${LUKS_IS_MOUNTED}" = "1" ]; then
+	    	log 'Device is already mounted!'
+	   	output_data
+	   	exit 0
+	else
+		if [ "${do_not_mount}" != "1" ]; then
+			log 'Trying to mount..'
+			[ ! -d "${LUKS_MOUNT_POINT}" ] && errd 6 "Mount point ${LUKS_MOUNT_POINT} does not exist"
+			if ! mount "${LUKS_MOUNT_POINT}"; then
+				errd 7 "Unable to mount decrypted volume ${LUKS_VOLUME_PATH} at ${LUKS_MOUNT_POINT}"
+			else
+				LUKS_IS_MOUNTED="1"
+				we_mounted="1"
+			fi
+		fi
+	fi
+fi
+
+[ ! -d "${LUKS_MOUNT_POINT}" -a "${check_password}" != "1" ] && errd 6 "Mount point ${LUKS_MOUNT_POINT} does not exist"
+
+have_timeout="0"
+first_text="${first_text} ${LUKS_MAP_NAME}\n(${LUKS_VOLUME_PATH})"
+[ "${check_password}" != "1" ] && unlocked="${LUKS_IS_UNLOCKED}"
+
+until [ "${unlocked}" = "1" -o "${have_timeout}" != "0" -o $retries -lt 0 ];
+do
+	case "${prompter}" in
+		zenity)
+			pass=$(LANG="${text_encoding}" ${prompter} --entry 				\
+							--title="${LUKS_MAP_NAME}" 			\
+							--text="$first_text" 				\
+							--entry-text="passwordfail555" 			\
+							--hide-text --timeout ${timeout})
+			have_timeout="$?"
+			;;
+		dialog)
+			pass=$(LANG="${text_encoding}" ${prompter} --stdout --clear			\
+							--title "${LUKS_MAP_NAME}"			\
+							--timeout ${timeout}				\
+							--passwordbox "${first_text}" 10 60)
+			have_timeout="$?"
+			;;
+		sh)
+			prest=$(stty -g)
+			printf "%b: " "${first_text}"
+			stty -echo -icanon min 0 isig -ixon time $((timeout*10))
+			read -r pass
+			have_timeout="$?"
+			stty ${prest}
+			;;
+		*)
+			prompter_fallback="1"
+			break
+			;;
+	esac
+	pass_ok="0"
+	log "Dialog returned ${have_timeout} (retries=${retries} unlocked=${unlocked})"
+	if [ "${pass}" = "passwordfail555\n" ]; then
+		log "Entered default password - retrying"
+		have_timeout="1"
+	fi
+	if [ "${have_timeout}" = "0" ]; then
+		log "Opening volume ${LUKS_MAP_NAME}: ${LUKS_VOLUME_PATH}"
+		echo "${pass}" | /sbin/cryptsetup ${test_pass} open "${LUKS_VOLUME_PATH}" "${LUKS_MAP_NAME}"
+		[ "$?" = "0" ] && pass_ok="1"
+	fi
+	if [ "${pass_ok}" = "1" ]; then
+		unlocked="1"
+		if [ "${do_not_unlock}" != "1" ]; then
+			log 'Volume unlocked!'
+			we_unlocked="1"
+		fi
+	fi
+	first_text="${retry_text}"
+	retries=$((retries-1))
+done
+
+if [ "${prompter_fallback}" = 1 ]; then
+	if [ "${unlocked}" != "1" -o "${check_password}" = "1" ]; then
+		log "Opening volume ${LUKS_MAP_NAME}: ${LUKS_VOLUME_PATH} (using native prompt)"
+		/sbin/cryptsetup ${test_pass} --timeout ${timeout} --tries $((retries+1)) open "${LUKS_VOLUME_PATH}" "${LUKS_MAP_NAME}"
+		if [ "$?" = "0" ]; then
+			pass_ok="1"
+			unlocked="1"
+			if [ "${do_not_unlock}" != "1" ]; then
+				log 'Volume unlocked!'
+				we_unlocked="1"
+			fi
+		fi
+	fi
+else
+	log 'Forgetting passphrase'
+	pass="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+	pass=""
+fi
+
+unset pass
+
+[ "${pass_ok}"  != "1" ] && errd 8 'Bad passphrase!'
+[ "${unlocked}" != "1" ] && errd 8 'Unable to unlock device!'
+[ "${unlocked}" = "1" -a "${do_not_unlock}" = "1" ] && unlocked="0"
+[ "${unlocked}" = "1"  ] && LUKS_IS_UNLOCKED="1"
+
+if [ "${LUKS_IS_MOUNTED}" != "1" -a "${do_not_mount}" != "1" ]; then
+	log 'Trying to mount..'
+	if mount "${LUKS_MOUNT_POINT}"; then
+		log 'Successfuly mounted!'
+		we_mounted="1"
+		LUKS_IS_MOUNTED="1"
+	else
+		errd 7 "Unable to mount decrypted volume ${LUKS_MAP_NAME} at ${LUKS_MOUNT_POINT}"
+	fi
+fi
+
+log 'Ok!'
+output_data
+
+}
+
+# register some helpers
+
+log () {
+	l="$*"
+	[ "${DEBUG}" != "1" ] && { unset l ; return 0 ; }
+    logger -t "${PROGRAM_NAME}" -p daemon.notice "${l}"
+	echo "${PROGRAM_NAME}: ${l}"
+	unset l
+}
+
+err () {
+	c=$1
+	shift
+	l="$*"
+	[ "${DEBUG}" = "1" ] && logger -t "${PROGRAM_NAME}" -p daemon.notice "Error: ${l}"
+	echo "${PROGRAM_NAME}: ${l}" 1>&2
+	exit $c
+}
+
+errd () {
+	output_data
+	err $*
+}
+
+output_data () {
+	[ "${batch_mode}" != "1" ] && return
+	echo "LUKS_UTILS_VER=\"${PROGRAM_VERSION}\""
+	echo "LUKS_VOLUME_PATH=\"${LUKS_VOLUME_PATH}\""
+	echo "LUKS_MOUNT_POINT=\"${LUKS_MOUNT_POINT}\""
+	echo "LUKS_MAP_DEVICE=\"${LUKS_MAP_DEVICE}\""
+	echo "LUKS_MAP_NAME=\"${LUKS_MAP_NAME}\""
+	echo "LUKS_IS_UNLOCKED=\"${LUKS_IS_UNLOCKED}\""
+	echo "LUKS_IS_MOUNTED=\"${LUKS_IS_MOUNTED}\""
+	echo "LUKS_MOUNTED_NOW=\"${we_mounted}\""
+	echo "LUKS_UNLOCKED_NOW=\"${we_unlocked}\""
+	echo "LUKS_PASSWORD_OK=\"${pass_ok}\""
+}
+
+test_number () {
+	local val=$1
+	local name="${2}"
+	[ -n "${3}" ] && local min=$3
+	[ -n "${4}" ] && local max=$4
+	[ -n "${name}" ] && name="${name} "
+	case "${val}" in
+		*-?[!0-9]*|'') err 1 "Argument ${name}should be a number" ;;
+	esac
+	[ -n "${min}" ] && [ $val -lt $min ] && err 1 "${name}should be from ${min:-minus infinity} to ${max:-infinity}"
+	[ -n "${max}" ] && [ $val -gt $max ] && err 1 "${name}should be from ${min:-minus infinity} to ${max:-infinity}"
+}
+
+display_usage () {
+	printf "%b" 	"Usage: ${PROGRAM_NAME} [option...] path [mount_point]\n\n" 			\
+		"path                   an encrypted volume path (e.g. /dev/sdd2)\n"			\
+		"                       or a device mapper device's path\n"				\
+		"                       (e.g. /dev/mapper/cryptfiles)\n"				\
+		"                       or a mapper name (e.g. cryptfiles)\n"				\
+		"                       or a mount point (e.g. /mnt/cfiles).\n\n"			\
+		"There should be appropriate entries in /etc/fstab\n"					\
+		"and/or in /etc/crypttab for the guessing process\n"					\
+		"to work properly.\n\n"									\
+		"mount_point            an optional hint if there is no mount point\n"			\
+		"                       defined in /etc/fstab\n\n"					\
+		"Options:\n\n"										\
+		"-a|--second-question   sets a question displayed after failed attempt\n"		\
+		"-b|--batch             prints detected parameters as key-value pairs\n"		\
+		"-c|--check-password    password checking mode; even on unlocked devices\n"		\
+		"                       (implies --no-unlock)\n"					\
+		"-d|--debug             enable debugging (stderr and syslog)\n"				\
+		"-e|--encoding          text encoding of prompts (defaults to ${DEFAULT_ENCODING})\n"	\
+		"-h|--help              shows this message\n"						\
+		"-l|--no-unlock         disables unlocking of the device\n"				\
+		"                       (implies --no-mount)\n"						\
+		"-n|--no-mount          disables mounting of the device\n"				\
+		"-p|--prompt-type       forces prompt type\n" 						\
+		"                       (possible options: dialog, readline, zenity)\n"			\
+		"-q|--question          sets a question displayed to ask for a password\n"		\
+		"-r|--retries           sets retries count (minimum ${MIN_RETRIES},\n"			\
+		"                       defaults to ${DEFAULT_RETRIES})\n"				\
+		"-t|--timeout           sets a timeout for entering a password\n"			\
+		"                       (minimum ${MIN_TIMEOUT}, defaults to ${DEFAULT_TIMEOUT},\n"	\
+		"                       0 disables)\n"							\
+		"-s|--sudo              uses sudo to gain root privileges instead of\n"			\
+		"                       reporting an error if run by a regular user\n"			\
+		"-V|--version           displays version and exits\n\n"
+}
+
+display_version () {
+		echo "${PROGRAM_NAME} ${PROGRAM_VERSION} -- ${PROGRAM_DESCRIPTION}"
+		echo "Copyright\t(c) 2014 by Pawel Wilk"
+		echo "License:\tGNU GPL 3.0 -- https://www.gnu.org/copyleft/gpl.html"
+		echo "Bug reports:\tluks-scripts@badsector.pl"
+}
+
+main "$@"
+exit 0
