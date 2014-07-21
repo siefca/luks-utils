@@ -1,4 +1,5 @@
-backup-luks-headers
+luks-utils v 1.0
 ===================
 
-POSIX shell script for making backups of LUKS headers
+A set of POSIX shell scripts for making LUKS management easier.
+
