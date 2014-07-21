@@ -1,0 +1,261 @@
+#!/bin/sh
+
+# luks-determine-device by Paweł Wilk <pw@gnu.org>
+# 
+# license: GNU GPL 3.0
+# 
+# Tests if a given path or name is a LUKS mapping, mount point
+# of LUKS mapping or a volume that holds an encrypted data.
+# Produces set of variables and their values on standard
+# output if a LUKS device is successfuly determined.
+
+VERSION="1.0"
+
+given_path="${1}"
+mount_point="${2}"
+device_decrypted="0"
+map_device=""
+is_mounted="0"
+volume=""
+
+[ -z "${DEBUG}" ] && DEBUG="0"
+
+log () {
+	[ "${DEBUG}" = "1" ] && logger -t "luks-determine-device" -p daemon.notice "$*"
+}
+
+err () {
+	l="$*"
+	[ "${DEBUG}" = "1" ] && logger -t "luks-determine-device" -p daemon.notice "Error: ${l}"
+	echo "Error: ${l}" 1>&2
+	unset l
+}
+
+output_data () {
+	ecode="${1}"
+	echo "LUKS_TOOLS_VER=\"${VERSION}\""
+	echo "LUKS_VOLUME_PATH=\"${volume_path}\""
+	[ -n "${mount_point}" ] && echo "LUKS_MOUNT_POINT=\"${mount_point}\""
+	echo "LUKS_MAP_DEVICE=\"${map_device}\""
+	echo "LUKS_MAP_NAME=\"${volume}\""
+	echo "LUKS_IS_UNLOCKED=\"${device_decrypted}\""
+	echo "LUKS_IS_MOUNTED=\"${is_mounted}\""
+	exit ${ecode}
+}
+
+[ -z "${given_path}" ] && { err 'Argument missing! Usage: luks-determine-device path [mount_point]' ; exit 1; }
+
+# detect active mapper paths and names
+
+l=$(cryptsetup -q status ${given_path} 2>/dev/null | awk '/^\s*device:/ { print $2; }')
+if [ -n "${l}" ]; then
+	[ -e "${given_path}" ] && map_device="${given_path}"
+	volume_path="${l}"
+fi
+
+# check if this is a /dev/mapper/sth
+# if it is then we shoud leave just the last part
+# and let it be handled by a common name detector
+
+if [ -z "${map_device}" -a -z "${given_path%/dev/mapper/*}" ]; then
+	map_device="${given_path}"
+	given_path="${given_path##*/}"
+	log "Detected /dev/mapper entry - extracting common name"
+fi
+
+# generic /etc/crypttab check
+
+if [ -z "${map_device}" -a -f /etc/crypttab -a -z "${given_path%/dev/dm*}" ]; then
+	i="${given_path##*/}"
+	l=$( awk -v n="${i}" '$1==n { sub("[ \t]*#.*$",""); print $2; }' /etc/crypttab )	# '
+	if [ -n "${l}" ]; then
+		log "Found entry in /etc/crypttab: ${l}"
+		map_device="${given_path}"
+		volume="${i}"
+		given_path="${l}"
+	fi
+fi
+
+# guess the device name based on common name of a cryptographic volume
+# that is not active
+
+if [ "${given_path}" = "${given_path#*/}" ]; then
+	log "Looks like ${given_path} is a common name"
+	if [ -f /etc/crypttab ]; then
+		l=$( awk -v n="${given_path}" '$1==n { sub("[ \t]*#.*$",""); print $2; }' /etc/crypttab )	# '
+		if [ -n "${l}" ]; then
+			log "Found entry in /etc/crypttab: ${l}"
+			volume="${given_path}"
+			given_path="${l}"
+			volume_path="${given_path}"
+			break
+		fi
+	fi
+	if [ -z "${volume}" ]; then
+		for i in /dev/disk/by-label/ /dev/md/ /dev/disk/by-id/ "/dev/disk/by-id/md-name-$(hostname -s):"; do
+			if [ -e "${i}${given_path}" ]; then
+				log "Found file in filesystem: ${i}"
+				volume="${given_path}"
+				given_path="${i}"
+				volume_path="${i}"
+				break
+			fi
+		done
+	fi
+	if [ -z "${map_device}" -a -n "${volume}" ]; then
+		map_device="/dev/mapper/${volume}"
+	fi
+fi
+
+# check if it's a regular mount point
+
+if [ -z "${map_device}" -a -z "${mount_point}" -a -z "${volume_path}" -a -z "${volume}" ]; then
+	for i in "${given_path}" \
+		  $(find -L /dev -maxdepth 1 -samefile "${given_path}" 2>/dev/null) \
+		  $(find -L /dev/disk /dev/md -maxdepth 8 -samefile "${given_path}" 2>/dev/null); do
+		l=$( awk -v n="${i}" '$2==n { sub("[ \t]*#.*$",""); print $1; }' /etc/fstab )		# '
+		if [ -n "${l}" ]; then
+			log "Seems like ${given_path} is a mount point"
+			mount_point="${given_path}"
+			map_device="${l}"
+			given_path=""
+			if [ $(readlink -f "${map_device}") != $(readlink -f "${mount_point}") ]; then
+			    log "Re-instantiating as: ${0} ${map_device} ${mount_point}"
+			    exec "${0}" "${map_device}" "${mount_point}"
+			fi
+		fi
+	done
+fi
+
+# canonicalize given_path and set volume_path
+
+if [ -z "${volume_path}" -a -f /etc/crypttab ]; then
+	xlq=""
+	xlw=""
+	xln=""
+	xlm=""
+	log "Looking for volume path in /etc/crypttab"
+	if [ -n "${volume}" -a "${given_path}" = "${given_path#*/}" ]; then
+		tempvol="${given_path}"
+	else
+		tempvol="${map_device##*/}"
+	fi
+	if [ -n "${map_device}" ]; then
+		xlq=$(find -L /dev -maxdepth 1 -samefile "${map_device}" 2>/dev/null)
+		xlw=$(find -L /dev/md /dev/mapper -maxdepth 8 -samefile "${map_device}" 2>/dev/null)
+	fi
+	if [ -n "${tempvol}" ]; then
+		xln=$(find -L /dev -maxdepth 1 -samefile "/dev/mapper/${tempvol}" 2>/dev/null)
+		xlm=$(find -L /dev/md /dev/mapper -maxdepth 8 -samefile "/dev/mapper/${tempvol}" 2>/dev/null)
+	fi
+	for i in "${volume}" "${map_device}" "/dev/mapper/${volume}" "${xlq}" "${xlw}" "${xlm}" "${xln}" "${tempvol}"; do
+		l=$( awk -v n="${i}" '$1==n { sub("[ \t]*#.*$",""); print $2; }' /etc/crypttab )	# '
+		if [ -n "${l}" ]; then
+			log "Found volume path in /etc/crypttab"
+			volume_path="${l}"
+			volume="${i}"
+			break
+		fi
+	done
+fi
+
+if [ -n "${given_path}" -a -z "${volume_path}" ]; then
+	volume_path=$(readlink -e "${given_path}")
+	[ -n "${volume_path}" ] && log "Got path ${given_path} (will use: ${volume_path})"
+fi
+
+#[ -z "${volume_path}" ] && { err "Cannot resolve volume path!" ; output_data 2; }
+
+# guess mapper device name based on a volume path
+# that will work only for already existing maps
+
+if [ -z "${map_device}" -a -d /dev/mapper ]; then
+	log 'Checking device mapper'
+	for i in $(find /dev/mapper -mindepth 1 -maxdepth 8 2>/dev/null); do
+		l=$(/sbin/cryptsetup -q status "${i}" 2>/dev/null | tr "\n" ' ' | grep "device:[[:blank:]]+${volume_path}[[:blank:]]*")
+		[ -z "${l}" ] && l=$(/sbin/cryptsetup -q status "${i}" 2>/dev/null | tr "\n" ' ' | grep "device:[[:blank:]]+${given_path}[[:blank:]]*")
+		if [ -n "${l}" ]; then
+			map_device="${i}"
+			echo "${l}" | grep -q " is active " && device_decrypted="1"
+			log "Found device ${map_device} (decrypted=${device_decrypted})"
+			break
+            	fi
+	done
+fi
+
+# guess cryptographic volume name using crypttab data and a volume path
+
+if [ -z "${volume}" -a -f /etc/crypttab ]; then
+	log 'Checking crypttab'
+	for i in "${volume_path}" "${given_path}" \
+		  $(find -L /dev -maxdepth 1 -samefile "${volume_path}" 2>/dev/null) \
+		  $(find -L /dev/disk /dev/md /dev/block /dev/mapper -maxdepth 8 -samefile "${volume_path}" 2>/dev/null); do
+        	l=$( awk -v n="${i}" '$2==n { sub("[ \t]*#.*$",""); print $1; }' /etc/crypttab )	# '
+                if [ -n "${l}" ]; then
+			volume="${l}"
+			log "Found cryptographic volume's common name: ${volume}"
+			break
+		fi
+	done
+fi
+
+[ -n "${map_device}"  -a -z "${volume}" ] 	&& volume="${map_device##*/}"
+[ -n "${mount_point}" -a -z "${volume}" ] 	&& volume="${mount_point##*/}"
+[ -n "${volume_path}" -a -z "${volume}" ] 	&& volume="${volume_path##*/}"
+[ -z "${map_device}"  -a -n "${volume}" ] 	&& map_device="/dev/mapper/${volume}"
+
+if [ -z "${mount_point}" ]; then
+	log 'Checking fstab'
+	mount_point=$(awk -v n="${map_device}" '$1==n { sub("[ \t]*#.*$",""); print $2; }' /etc/fstab)		# '
+	if [ ! -d "${mount_point}" ]; then
+		for x in "${map_device}" \
+			 $(find -L /dev 	-maxdepth 1 -samefile "${map_device}" 2>/dev/null) \
+			 $(find -L /dev/mapper /dev/block /dev/md /dev/disk -maxdepth 8 -samefile "${map_device}" 2>/dev/null); do
+			mount_point=$( awk -v n="${x}" '$1==n { sub("[ \t]*#.*$",""); print $2; }' /etc/fstab )		# '
+			[ -d "${mount_point}" ] && break
+		done
+	fi
+	[ -n "${mount_point}" ] && log "Found mount point: ${mount_point}"
+fi
+
+log 'Checking if we have enough data to go on..'
+log "Found data:"
+log " - volume=${volume}"
+log " - volume_path=${volume_path}"
+log " - map_device=${map_device}"
+log " - mount_point=${mount_point}"
+
+log 'Dereferencing mount point..'
+mount_point=$(readlink -f "${mount_point}")
+is_mounted="0"
+
+log 'Checking if we have enough data to go on.. (pass 2)'
+if [ -z "${volume}" -o -z "${map_device}" -o -z "${volume_path}" ]; then
+	mdat=""
+	[ -z "${volume}" ] 	&& mdat="${mdat} cryptographic volume common name,"
+	[ -z "${volume_path}" ]	&& mdat="${mdat} disk volume path,"
+	[ -z "${map_device}" ]	&& mdat="${mdat} cryptographic volume mapping path,"
+	# [ -z "${mount_point}" ] && mdat="${mdat} mount point,"
+	mdat="${mdat%,*}"
+	err "Couldn't collect the following data:${mdat}"
+	output_data 5
+fi
+
+if [ -n "${mount_point}" ]; then
+	if grep -q "[[:blank:]]${mount_point}[[:blank:]]" /proc/mounts; then
+		log 'Device is already mounted!'
+		is_mounted="1"
+		device_decrypted="1"
+	fi
+else
+	if grep -q "[[:blank:]]${map_device}[[:blank:]]" /proc/mounts; then
+                log 'Device is already mounted!'
+                is_mounted="1"
+                device_decrypted="1"
+        fi
+fi
+
+[ "${device_decrypted}" != "1" ] && /sbin/cryptsetup -q status "${map_device}" 2>/dev/null | grep -q " is active " && device_decrypted="1"
+volume_path=$(readlink -f ${volume_path})
+
+output_data 0
