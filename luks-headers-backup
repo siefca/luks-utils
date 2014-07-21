@@ -11,10 +11,14 @@ if [ -n "${1}" ]; then
 else
     echo 										1>&2
     echo "WARNING: The backup files and passphrases valid at the time of backup"	1>&2
-    echo "allow decryption of the LUKS data areas, even if the passphrases were later"	1>&2
-    echo "changed or removed from the LUKS devices."					1>&2
+    echo "allow decryption of the LUKS data areas, even if the passphrases"		1>&2
+    echo "were later changed or removed from the LUKS devices."				1>&2
     echo										1>&2
-    echo "Pass destination directory path as a first argument to remove this warning."	1>&2
+    echo "I will wait 7 seconds before making backups. Press CTRL+C to abort."		1>&2
+    echo                                                                                1>&2
+    echo "Pass destination directory path as a first argument"				1>&2
+    echo "to remove this warning."							1>&2
+    sleep 7
 fi
 
 echo
