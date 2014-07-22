@@ -8,11 +8,16 @@
 # of LUKS mapping or a volume that holds an encrypted data.
 # Produces set of variables and their values on standard
 # output if a LUKS device is successfuly determined.
+# 
+# Usage: luks-determine-device path [mount_point] [dm_name]
+#
 
-VERSION="1.0"
+PROGRAM_NAME="luks-determine-device"
+VERSION="1.1"
 
 given_path="${1}"
 mount_point="${2}"
+dm_name="${3}"
 device_decrypted="0"
 map_device=""
 is_mounted="0"
@@ -21,14 +26,17 @@ volume=""
 [ -z "${DEBUG}" ] && DEBUG="0"
 
 log () {
-	[ "${DEBUG}" = "1" ] && logger -t "luks-determine-device" -p daemon.notice "$*"
+	[ "${DEBUG}" = "1" ] && logger -t "${PROGRAM_NAME}" -p daemon.notice "$*"
 }
 
 err () {
+	c=${1}
+	shift
 	l="$*"
-	[ "${DEBUG}" = "1" ] && logger -t "luks-determine-device" -p daemon.notice "Error: ${l}"
-	echo "Error: ${l}" 1>&2
-	unset l
+	[ "${DEBUG}" = "1" ] && logger -t "${PROGRAM_NAME}" -p daemon.notice "Error: ${l}"
+	echo "${PROGRAM_NAME}: ${l}" 1>&2
+	[ "${c}" = "1" ] && exit 1
+	output_data ${c}
 }
 
 output_data () {
@@ -43,9 +51,16 @@ output_data () {
 	exit ${ecode}
 }
 
-[ -z "${given_path}" ] && { err 'Argument missing! Usage: luks-determine-device path [mount_point]' ; exit 1; }
+[ -z "${given_path}" ] && err 1 'Argument missing! Usage: luks-determine-device path [mount_point] [dm_name]'
 
-# detect active mapper paths and names
+# if all arguments are given then we're in manual mode
+
+if [ -n "${dm_name}" -a -n "${mount_point}" -a -n "${given_path}" ]; then
+	volume="${dm_name}"
+	mount_point="${mount_point}"
+fi
+
+# detect active mapper paths and names (in case if a given path is a mapper device)
 
 l=$(cryptsetup -q status ${given_path} 2>/dev/null | awk '/^\s*device:/ { print $2; }')
 if [ -n "${l}" ]; then
@@ -164,7 +179,7 @@ if [ -n "${given_path}" -a -z "${volume_path}" ]; then
 	[ -n "${volume_path}" ] && log "Got path ${given_path} (will use: ${volume_path})"
 fi
 
-#[ -z "${volume_path}" ] && { err "Cannot resolve volume path!" ; output_data 2; }
+#[ -z "${volume_path}" ] && err 2 "Cannot resolve volume path!" 
 
 # guess mapper device name based on a volume path
 # that will work only for already existing maps
@@ -237,8 +252,7 @@ if [ -z "${volume}" -o -z "${map_device}" -o -z "${volume_path}" ]; then
 	[ -z "${map_device}" ]	&& mdat="${mdat} cryptographic volume mapping path,"
 	# [ -z "${mount_point}" ] && mdat="${mdat} mount point,"
 	mdat="${mdat%,*}"
-	err "Couldn't collect the following data:${mdat}"
-	output_data 5
+	err 5 "Couldn't collect the following data:${mdat}"
 fi
 
 if [ -n "${mount_point}" ]; then

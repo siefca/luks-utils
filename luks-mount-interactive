@@ -5,7 +5,7 @@
 # license: GNU GPL 3.0
 # 
 
-PROGRAM_VERSION="1.0"
+PROGRAM_VERSION="1.1"
 PROGRAM_NAME="luks-mount-interactive"
 PROGRAM_DESCRIPTION="easily mount LUKS devices"
 
@@ -127,6 +127,7 @@ done
 
 volume_path_orig="${1}"
 mount_point="${2}"
+dm_name="${3}"
 test_pass=""
 
 # validate required arguments
@@ -200,7 +201,9 @@ we_mounted="0"
 we_unlocked="0"
 unlocked="0"
 
-eval $(DEBUG="${DEBUG}" luks-determine-device "${volume_path_orig}" "${mount_point}")
+# gather info about the device and fix paths if necessary
+
+eval $(DEBUG="${DEBUG}" luks-determine-device "${volume_path_orig}" "${mount_point}" "${dm_name}")
 
 [ -z "${LUKS_VOLUME_PATH}"   ] && errd 2  "Cannot resolve path "
 [ -z "${LUKS_MOUNT_POINT}"   ] && errd 3  "Cannot find mount point"
@@ -379,17 +382,19 @@ test_number () {
 }
 
 display_usage () {
-	printf "%b" 	"Usage: ${PROGRAM_NAME} [option...] path [mount_point]\n\n" 			\
+	printf "%b" 	"Usage: ${PROGRAM_NAME} [option...] path [mount_point] [name]\n\n" 		\
 		"path                   an encrypted volume path (e.g. /dev/sdd2)\n"			\
 		"                       or a device mapper device's path\n"				\
 		"                       (e.g. /dev/mapper/cryptfiles)\n"				\
 		"                       or a mapper name (e.g. cryptfiles)\n"				\
-		"                       or a mount point (e.g. /mnt/cfiles).\n\n"			\
+		"                       or a mount point (e.g. /mnt/cfiles)\n\n"			\
+		"mount_point            an optional mount point to be used while mounting\n"		\
+		"                       a decrypted device instead of one from /etc/fstab\n\n"		\
+		"name                   an optional name of a mapping\n\n"				\
 		"There should be appropriate entries in /etc/fstab\n"					\
-		"and/or in /etc/crypttab for the guessing process\n"					\
-		"to work properly.\n\n"									\
-		"mount_point            an optional hint if there is no mount point\n"			\
-		"                       defined in /etc/fstab\n\n"					\
+		"and in /etc/crypttab for the guessing process\n"					\
+		"to work properly, unless there are some hints given\n"					\
+		"with mount_point and/or name.\n\n"							\
 		"Options:\n\n"										\
 		"-a|--second-question   sets a question displayed after failed attempt\n"		\
 		"-b|--batch             prints detected parameters as key-value pairs\n"		\
