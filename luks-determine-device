@@ -13,7 +13,7 @@
 #
 
 PROGRAM_NAME="luks-determine-device"
-VERSION="1.1"
+VERSION="1.2"
 
 given_path="${1}"
 mount_point="${2}"
