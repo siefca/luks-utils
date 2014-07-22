@@ -162,23 +162,23 @@ case "${prompt_type}" in
 	readline)	prompter="sh"		;;
 	dialog)		prompter="dialog"	;;
 	zenity)
-		needs_display="1"
-		prompter="zenity"
-		;;
+			needs_display="1"
+			prompter="zenity"
+			;;
 	''|' '|auto)
-        prompt_type="auto"
-		if [ -t ]; then
-			for i in dialog sh cryptsetup ; do
-				type ${i} >/dev/null 2>&1 && prompter="${i}" && break
-			done
-        else
-            needs_display="1"
-            prompter="zenity"
-		fi
-		;;
+			prompt_type="auto"
+			if [ -t ]; then
+				for i in dialog sh cryptsetup ; do
+					type ${i} >/dev/null 2>&1 && prompter="${i}" && break
+				done
+        		else
+				needs_display="1"
+				prompter="zenity"
+			fi
+			;;
 	*)
-		err 1 "Invalid prompt type. Available types are: dialog, readline, zenity"
-		;;
+			err 1 "Invalid prompt type. Available types are: dialog, readline, zenity, native, auto"
+			;;
 esac
 
 # setup prompter
@@ -416,10 +416,11 @@ display_usage () {
 		"-n|--no-mount          disables mounting of the device\n"				\
 		"-p|--prompt-type       forces prompt type\n" 						\
 		"                       possible options:\n"						\
-		"                        - dialog   [ ncurses-based external tool ],\n"			\
-		"                        - native   [ cryptsetup's native prompt  ],\n"			\
-		"                        - readline [ shell-based internal method ],\n"			\
-		"                        - zenity   [ gtk-based external tool     ]\n"			\
+		"                        - auto     [ automatic selection (default) ],\n"		\
+		"                        - dialog   [ ncurses-based external tool   ],\n"		\
+		"                        - native   [ cryptsetup's native prompt    ],\n"		\
+		"                        - readline [ shell-based internal method   ],\n"		\
+		"                        - zenity   [ gtk-based external tool       ]\n"		\
 		"-q|--question          sets a question displayed to ask for a password\n"		\
 		"-r|--retries           sets retries count (minimum ${MIN_RETRIES},\n"			\
 		"                       defaults to ${DEFAULT_RETRIES})\n"				\
