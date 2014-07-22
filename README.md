@@ -23,8 +23,8 @@ Mounting an encrypted partition that has no given mount point in `/etc/fstab` or
 
 Mounting an encrypted partition that also has no entry in `/etc/crypttab`:
 
-* `luks-mount-interactive cryptdocs /mnt/secret_docs /dev/sdd1` (first partition of `sdd`)
-* `luks-mount-interactive cryptdocs /mnt/secret_docs /dev/md/docs` (MD device labeled `docs`)
+* `luks-mount-interactive /dev/sdd1 /mnt/secret_docs cryptdocs` (first partition of `sdd`)
+* `luks-mount-interactive /dev/md/docs /mnt/secret_docs cryptdocs` (MD device labeled `docs`)
 
 Running as a user (uses `sudo` or `gksudo`):
 
