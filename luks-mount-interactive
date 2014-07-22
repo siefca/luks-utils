@@ -436,7 +436,7 @@ display_version () {
 		echo "${PROGRAM_NAME} ${PROGRAM_VERSION} -- ${PROGRAM_DESCRIPTION}"
 		echo "Copyright\t(c) 2014 by Pawel Wilk"
 		echo "License:\tGNU GPL 3.0 -- https://www.gnu.org/copyleft/gpl.html"
-		echo "Bug reports:\tluks-scripts@badsector.pl"
+		echo "Bug reports:\tluks-utils@badsector.pl"
 }
 
 main "$@"
