@@ -5,7 +5,7 @@
 # license: GNU GPL 3.0
 # 
 
-PROGRAM_VERSION="1.1"
+PROGRAM_VERSION="1.2"
 PROGRAM_NAME="luks-mount-interactive"
 PROGRAM_DESCRIPTION="easily mount LUKS devices"
 
@@ -28,7 +28,7 @@ origargs="$*"
 
 args="$(getopt	-n "${PROGRAM_NAME}"									\
 		-o "Vhnlcdp:q:a:e:t:r:bs"								\
-		--long	"version,help,no-mount,no-unlock,check-password,debug,prompt-type:, 		\
+		--long	"version,help,no-mount,no-unlock,check-password,debug,prompt-type:,prompt:,	\
 			question:,second-question:,encoding:,						\
 			timeout:,retries:,batch,sudo"							\
 		-- "$@")"
@@ -72,7 +72,7 @@ while true; do
 			shift
 			continue
 			;;
-		-p|--prompt-type)
+		-p|--prompt|--prompt-type)
 			prompt_type="${2}"
 			shift; shift
 			continue
@@ -190,7 +190,7 @@ log "Prompt type is ${prompt_type}; established prompter: ${prompter}"
 if [ "$(id -u)" != "0" ]; then
 	[ "${use_sudo}" != "1" ] && err 11 "This program requires superuser privileges to run"
 	if [ -n "${DISPLAY}" ]; then
-		exec gksudo "${my_script}" ${origargs}
+		exec gksudo "${my_script} ${origargs}"
 	else
 		exec sudo "${my_script}" ${origargs}
 	fi
@@ -232,31 +232,34 @@ fi
 [ ! -d "${LUKS_MOUNT_POINT}" -a "${check_password}" != "1" ] && errd 6 "Mount point ${LUKS_MOUNT_POINT} does not exist"
 
 have_timeout="0"
+
 first_text="${first_text} ${LUKS_MAP_NAME}\n(${LUKS_VOLUME_PATH})"
 [ "${check_password}" != "1" ] && unlocked="${LUKS_IS_UNLOCKED}"
+[ "${timeout}" = "0" ] && timeout=""
 
 until [ "${unlocked}" = "1" -o "${have_timeout}" != "0" -o $retries -lt 0 ];
 do
 	case "${prompter}" in
 		zenity)
+			
 			pass=$(LANG="${text_encoding}" ${prompter} --entry 				\
 							--title="${LUKS_MAP_NAME}" 			\
 							--text="$first_text" 				\
 							--entry-text="passwordfail555" 			\
-							--hide-text --timeout ${timeout})
+							--hide-text ${timeout:+--timeout=$timeout})
 			have_timeout="$?"
 			;;
 		dialog)
 			pass=$(LANG="${text_encoding}" ${prompter} --stdout --clear			\
 							--title "${LUKS_MAP_NAME}"			\
-							--timeout ${timeout}				\
+							${timeout:+--timeout $timeout}			\
 							--passwordbox "${first_text}" 10 60)
 			have_timeout="$?"
 			;;
 		sh)
 			prest=$(stty -g)
 			printf "%b: " "${first_text}"
-			stty -echo -icanon min 0 isig -ixon time $((timeout*10))
+			stty -echo min 0 isig ${timeout:+-icanon time $((timeout*10))}
 			read -r pass
 			have_timeout="$?"
 			stty ${prest}
@@ -291,7 +294,7 @@ done
 if [ "${prompter_fallback}" = 1 ]; then
 	if [ "${unlocked}" != "1" -o "${check_password}" = "1" ]; then
 		log "Opening volume ${LUKS_MAP_NAME}: ${LUKS_VOLUME_PATH} (using native prompt)"
-		/sbin/cryptsetup ${test_pass} --timeout ${timeout} --tries $((retries+1)) open "${LUKS_VOLUME_PATH}" "${LUKS_MAP_NAME}"
+		/sbin/cryptsetup ${test_pass} ${timeout:+--timeout $timeout} --tries $((retries+1)) open "${LUKS_VOLUME_PATH}" "${LUKS_MAP_NAME}"
 		if [ "$?" = "0" ]; then
 			pass_ok="1"
 			unlocked="1"
@@ -407,7 +410,11 @@ display_usage () {
 		"                       (implies --no-mount)\n"						\
 		"-n|--no-mount          disables mounting of the device\n"				\
 		"-p|--prompt-type       forces prompt type\n" 						\
-		"                       (possible options: dialog, readline, zenity)\n"			\
+		"                       possible options:\n"						\
+		"                        - dialog   [ ncurses-based external tool ],\n"			\
+		"                        - native   [ cryptsetup's native prompt  ],\n"			\
+		"                        - readline [ shell-based internal method ],\n"			\
+		"                        - zenity   [ gtk-based external tool     ]\n"			\
 		"-q|--question          sets a question displayed to ask for a password\n"		\
 		"-r|--retries           sets retries count (minimum ${MIN_RETRIES},\n"			\
 		"                       defaults to ${DEFAULT_RETRIES})\n"				\
