@@ -1,10 +1,11 @@
 #!/bin/sh
 
+PROGRAM_VERSION="1.2"
 DESTINATION_DIRECTORY=/var/backups
 
 echo "LUKS headers backup script by Paweł Wilk <pw@gnu.org>"
 echo "-----------------------------------------------------"
-echo "                         license: GNU GPL version 3.0"
+echo "version ${PROGRAM_VERSION}              license: GNU GPL version 3.0"
 
 if [ -n "${1}" ]; then
     DESTINATION_DIRECTORY="${1}"
