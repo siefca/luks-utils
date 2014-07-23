@@ -167,7 +167,7 @@ case "${prompt_type}" in
 			;;
 	''|' '|auto)
 			prompt_type="auto"
-			if [ -t ]; then
+			if [ -t 0 ]; then
 				for i in dialog sh cryptsetup ; do
 					type ${i} >/dev/null 2>&1 && prompter="${i}" && break
 				done
@@ -191,7 +191,7 @@ log "Prompt type is ${prompt_type}; established prompter: ${prompter}"
 
 if [ "$(id -u)" != "0" ]; then
 	[ "${use_sudo}" != "1" ] && err 11 "This program requires superuser privileges to run"
-	if [ -t ]; then
+	if [ -t 0 ]; then
         log "Running sudo"
         exec sudo "${my_script}" ${origargs}
     else
