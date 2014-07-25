@@ -1,0 +1,221 @@
+#!/bin/sh
+
+# luks-umount by Paweł Wilk <pw@gnu.org>
+# 
+# license: GNU GPL 3.0
+# 
+
+PROGRAM_VERSION="1.4"
+PROGRAM_NAME="luks-umount"
+PROGRAM_DESCRIPTION="unmount and close LUKS devices"
+
+# defaults
+
+main () {
+
+# parse arguments
+
+my_script="${0}"
+origargs="$*"
+
+args="$(getopt	-n "${PROGRAM_NAME}"				\
+		-o "Vhndbs"					\
+		--long	"version,help,no-lock,debug,batch,sudo"	\
+		-- "$@")"
+
+[ "$?" != "0" ] && exit 1
+
+eval set -- "${args}"
+while true; do
+	case $1 in
+		-V|--version)
+			display_version
+			exit 0
+			;;
+		-h|--help)
+			volume_path_orig=""
+			usage_called="1"
+			shift
+			[ "${1}" = '--' ] && shift
+			break
+			;;
+		-n|--no-lock)
+			do_not_lock="1"
+			shift
+			continue
+			;;
+		-d|--debug)
+			debug="1"
+			shift
+			continue
+			;;
+		-b|--batch)
+			batch_mode="1"
+			shift
+			continue
+			;;
+		-s|--sudo)
+			use_sudo="1"
+			shift
+			continue
+			;;
+		--)
+			shift
+			break
+			;;
+		"")
+			break
+			;;
+		*)
+			err 1 "Unknown argument: ${1}"
+			;;
+	esac
+done
+
+volume_path_orig="${1}"
+mount_point="${2}"
+dm_name="${3}"
+
+# validate required arguments
+
+if [ -z "${volume_path_orig}" -o "${usage_called}" = "1" ]; then
+	display_usage
+	[ "${usage_called}" = "1" ] && { echo ; display_version ; exit 0 ; }
+	exit 1
+fi
+
+# validate and re-set optional arguments
+
+[ "${debug}" = "1" ] && DEBUG="1"
+
+# go
+
+if [ "$(id -u)" != "0" ]; then
+	[ "${use_sudo}" != "1" ] && err 11 "This program requires superuser privileges to run"
+	if [ -t 0 ]; then
+		log "Running sudo"
+		exec sudo "${my_script}" ${origargs}
+	else
+		log "Running gksudo"
+		exec gksudo "${my_script} ${origargs}"
+	fi
+fi
+
+we_unmounted="0"
+we_locked="0"
+
+# gather info about the device and fix paths if necessary
+
+log "Determining device.."
+eval $(DEBUG="${DEBUG}" luks-determine-device "${volume_path_orig}" "${mount_point}" "${dm_name}")
+
+[ -z "${LUKS_MAP_NAME}"    ] && errd 2  "Cannot get map name"
+[ -z "${LUKS_MOUNT_POINT}" ] && errd 3  "Cannot find mount point"
+
+if [ "${LUKS_IS_MOUNTED}" != "1" ]; then
+	log "Device is already unmounted!"
+else
+	log 'Trying to unmount..'
+	[ ! -d "${LUKS_MOUNT_POINT}" ] && errd 6 "Mount point ${LUKS_MOUNT_POINT} does not exist"
+	if ! umount "${LUKS_MOUNT_POINT}"; then
+		errd 7 "Unable to unmount the decrypted volume ${LUKS_VOLUME_PATH} from ${LUKS_MOUNT_POINT}"
+	else
+		LUKS_IS_MOUNTED="0"
+		we_unmounted="1"
+	fi
+fi
+
+if [ "${LUKS_IS_UNLOCKED}" != "1" ]; then
+	log 'Device is already locked!'
+	output_data
+	exit 0
+fi
+
+if [ "${do_not_lock}" = "1" ]; then
+	log 'Leaving the device unlocked'
+	output_data
+	exit 0
+fi
+
+log 'Locking the device..'
+
+cryptsetup close "${LUKS_MAP_NAME}" || errd 8 'There was a problem with locking the device!'
+
+LUKS_IS_UNLOCKED="0"
+we_locked="1"
+
+log 'Ok!'
+output_data
+
+}
+
+# register some helpers
+
+log () {
+	l="$*"
+	[ "${DEBUG}" != "1" ] && { unset l ; return 0 ; }
+	logger -t "${PROGRAM_NAME}" -p daemon.notice "${l}"
+	echo "${PROGRAM_NAME}: ${l}"
+	unset l
+}
+
+err () {
+	c=$1
+	shift
+	l="$*"
+	[ "${DEBUG}" = "1" ] && logger -t "${PROGRAM_NAME}" -p daemon.notice "Error: ${l}"
+	echo "${PROGRAM_NAME}: ${l}" 1>&2
+	exit $c
+}
+
+errd () {
+	output_data
+	err $*
+}
+
+output_data () {
+	[ "${batch_mode}" != "1" ] && return
+	echo "LUKS_UTILS_VER=\"${PROGRAM_VERSION}\""
+	echo "LUKS_VOLUME_PATH=\"${LUKS_VOLUME_PATH}\""
+	echo "LUKS_MOUNT_POINT=\"${LUKS_MOUNT_POINT}\""
+	echo "LUKS_MAP_DEVICE=\"${LUKS_MAP_DEVICE}\""
+	echo "LUKS_MAP_NAME=\"${LUKS_MAP_NAME}\""
+	echo "LUKS_IS_UNLOCKED=\"${LUKS_IS_UNLOCKED}\""
+	echo "LUKS_IS_MOUNTED=\"${LUKS_IS_MOUNTED}\""
+	echo "LUKS_UNMOUNTED_NOW=\"${we_unmounted}\""
+	echo "LUKS_LOCKED_NOW=\"${we_locked}\""
+}
+
+display_usage () {
+	printf "%b" 	"Usage: ${PROGRAM_NAME} [option...] path [mount_point] [name]\n\n" 		\
+		"path                   an encrypted volume path (e.g. /dev/sdd2)\n"			\
+		"                       or a device mapper device's path\n"				\
+		"                       (e.g. /dev/mapper/cryptfiles)\n"				\
+		"                       or a mapper name (e.g. cryptfiles)\n"				\
+		"                       or a mount point (e.g. /mnt/cfiles)\n\n"			\
+		"mount_point            an optional mount point to be used while unmounting\n"		\
+		"                       a decrypted device instead of one from /etc/fstab\n\n"		\
+		"name                   an optional name of a mapping\n\n"				\
+		"There should be appropriate entries in /etc/fstab\n"					\
+		"and in /etc/crypttab for the guessing process\n"					\
+		"to work properly, unless there are some hints given\n"					\
+		"with mount_point and/or name.\n\n"							\
+		"Options:\n\n"										\
+		"-b|--batch             prints detected parameters as key-value pairs\n"		\
+		"-d|--debug             enable debugging (stderr and syslog)\n"				\
+		"-h|--help              shows this message\n"						\
+		"-n|--no-lock           disables locking of a device\n"					\
+		"-s|--sudo              uses sudo to gain root privileges instead of\n"			\
+		"                       reporting an error if run by a regular user\n"			\
+		"-V|--version           displays version and exits\n\n"
+}
+
+display_version () {
+		echo "${PROGRAM_NAME} ${PROGRAM_VERSION} -- ${PROGRAM_DESCRIPTION}"
+		echo "Copyright\t(c) 2014 by Pawel Wilk"
+		echo "License:\tGNU GPL 3.0 -- https://www.gnu.org/copyleft/gpl.html"
+		echo "Bug reports:\tluks-utils@badsector.pl"
+}
+
+main "$@"
+exit 0

@@ -1,0 +1,2 @@
+- add support for multiple devices with a single passphrase
+- add an option for enabling debugging via syslog
