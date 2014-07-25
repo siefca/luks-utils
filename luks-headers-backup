@@ -1,6 +1,6 @@
 #!/bin/sh
 
-PROGRAM_VERSION="1.3"
+PROGRAM_VERSION="1.4"
 DESTINATION_DIRECTORY=/var/backups
 
 echo "LUKS headers backup script by Paweł Wilk <pw@gnu.org>"

@@ -1,4 +1,4 @@
-luks-utils v 1.3
+luks-utils v 1.4
 ===================
 
 A set of POSIX shell scripts for making LUKS management easier.
