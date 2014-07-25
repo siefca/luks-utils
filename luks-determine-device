@@ -13,7 +13,7 @@
 #
 
 PROGRAM_NAME="luks-determine-device"
-VERSION="1.3"
+VERSION="1.4"
 
 given_path="${1}"
 mount_point="${2}"
@@ -26,7 +26,10 @@ volume=""
 [ -z "${DEBUG}" ] && DEBUG="0"
 
 log () {
-	[ "${DEBUG}" = "1" ] && logger -t "${PROGRAM_NAME}" -p daemon.notice "$*"
+	if [ "${DEBUG}" = "1" ]; then
+		logger -t "${PROGRAM_NAME}" -p daemon.notice "$*"
+		echo "${PROGRAM_NAME}: $*" 1>&2
+	fi
 }
 
 err () {
@@ -126,8 +129,7 @@ fi
 
 if [ -z "${map_device}" -a -z "${mount_point}" -a -z "${volume_path}" -a -z "${volume}" ]; then
 	for i in "${given_path}" \
-		  $(find -L /dev -maxdepth 1 -samefile "${given_path}" 2>/dev/null) \
-		  $(find -L /dev/disk /dev/md -maxdepth 8 -samefile "${given_path}" 2>/dev/null); do
+		  $(readlink -f "${given_path}"); do
 		l=$( awk -v n="${i}" '$2==n { sub("[ \t]*#.*$",""); print $1; }' /etc/fstab )		# '
 		if [ -n "${l}" ]; then
 			log "Seems like ${given_path} is a mount point"
@@ -136,7 +138,7 @@ if [ -z "${map_device}" -a -z "${mount_point}" -a -z "${volume_path}" -a -z "${v
 			given_path=""
 			if [ $(readlink -f "${map_device}") != $(readlink -f "${mount_point}") ]; then
 			    log "Re-instantiating as: ${0} ${map_device} ${mount_point}"
-			    exec "${0}" "${map_device}" "${mount_point}"
+			    exec "${0}" "${map_device}" "${mount_point}" "${dm_name}"
 			fi
 		fi
 	done
